@@ -208,8 +208,8 @@ async fn run() -> anyhow::Result<()> {
     });
 
     let id_channels_warp = warp::any().map({
-        let id_ch = id_channels.clone();
-        move || id_ch.clone()
+        let id_channel_sup = id_channels.clone();
+        move || id_channel_sup.clone()
     });
 
     let subscribe_route = warp::path!("subscribe")
