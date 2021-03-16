@@ -241,7 +241,10 @@ async fn run() -> anyhow::Result<()> {
                         None => {}
                         Some((_tx, rx)) => {
                             while let Some(message) = rx.recv().await {
-                                tx.send(warp::ws::Message::text(message)).await;
+                                if let Err(e) = tx.send(warp::ws::Message::text(message)).await {
+                                    log::error!("{}", e);
+                                    break;
+                                }
                             }
                         }
                     }
