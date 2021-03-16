@@ -308,7 +308,7 @@ impl std::fmt::Display for Tons {
     }
 }
 
-#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Direction {
     All,
     Incoming,

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -6,17 +7,21 @@ use either::Either;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::Consumer;
 use rdkafka::{ClientConfig, Message};
-use serde::export::Formatter;
 use serde::Deserialize;
-use teloxide::prelude::Request;
-use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, ReplyMarkup};
-use teloxide::Bot;
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, ReplyMarkup};
 use tokio::stream::StreamExt;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::RwLock;
 
 use crate::settings;
 use crate::state::*;
+use std::fmt::Formatter;
 
-pub fn spawn_listener(settings: settings::Kafka, bot: Bot, state: Arc<State>) -> Result<()> {
+pub fn spawn_listener(
+    settings: settings::Kafka,
+    id_channels: Arc<RwLock<HashMap<i64, (UnboundedSender<String>, UnboundedReceiver<String>)>>>,
+    state: Arc<State>,
+) -> Result<()> {
     let mut client_config = ClientConfig::new();
     client_config
         .set("group.id", &settings.consumer_group_id)
@@ -50,13 +55,21 @@ pub fn spawn_listener(settings: settings::Kafka, bot: Bot, state: Arc<State>) ->
     });
 
     for consumer in consumers.into_iter() {
-        tokio::spawn(listen_consumer(consumer, bot.clone(), state.clone()));
+        tokio::spawn(listen_consumer(
+            consumer,
+            id_channels.clone(),
+            state.clone(),
+        ));
     }
 
     Ok(())
 }
 
-async fn listen_consumer(consumer: StreamConsumer, bot: Bot, state: Arc<State>) {
+async fn listen_consumer(
+    consumer: StreamConsumer,
+    id_channels: Arc<RwLock<HashMap<i64, (UnboundedSender<String>, UnboundedReceiver<String>)>>>,
+    state: Arc<State>,
+) {
     loop {
         let mut messages = consumer.start();
         log::debug!("Started consumer {:?}", consumer.assignment());
@@ -82,7 +95,7 @@ async fn listen_consumer(consumer: StreamConsumer, bot: Bot, state: Arc<State>) 
                             if let Err(e) = process_message(
                                 &transaction,
                                 &msg,
-                                &bot,
+                                &id_channels,
                                 state.as_ref(),
                                 TransferDirection::Incoming,
                             )
@@ -98,7 +111,7 @@ async fn listen_consumer(consumer: StreamConsumer, bot: Bot, state: Arc<State>) 
                         if let Err(e) = process_message(
                             &transaction,
                             &msg,
-                            &bot,
+                            &id_channels,
                             state.as_ref(),
                             TransferDirection::Outgoing,
                         )
@@ -127,7 +140,7 @@ async fn listen_consumer(consumer: StreamConsumer, bot: Bot, state: Arc<State>) 
 async fn process_message(
     transaction: &Transaction,
     message: &TransactionMessage,
-    bot: &Bot,
+    id_channels: &Arc<RwLock<HashMap<i64, (UnboundedSender<String>, UnboundedReceiver<String>)>>>,
     state: &State,
     direction: TransferDirection,
 ) -> Result<()> {
@@ -184,7 +197,7 @@ async fn process_message(
                 .flatten();
 
             send_message(
-                bot,
+                id_channels,
                 chat_id,
                 text.with_comments(src_comment, dest_comment),
                 &markup,
@@ -196,18 +209,23 @@ async fn process_message(
     Ok(())
 }
 
-async fn send_message<T>(bot: &Bot, chat_id: i64, text: T, markup: &ReplyMarkup)
-where
+async fn send_message<T>(
+    id_channels: &Arc<RwLock<HashMap<i64, (UnboundedSender<String>, UnboundedReceiver<String>)>>>,
+    chat_id: i64,
+    text: T,
+    markup: &ReplyMarkup,
+) where
     T: Into<String>,
 {
-    if let Err(e) = bot
-        .send_message(chat_id, text)
-        .reply_markup(markup.clone())
-        .parse_mode(ParseMode::MarkdownV2)
-        .send()
-        .await
-    {
-        log::error!("failed to send message: {:?}", e);
+    match id_channels.read().await.get(&chat_id) {
+        None => {
+            log::error!("failed to get sender by id: \"{}\"", chat_id);
+        }
+        Some((tx, _rx)) => {
+            if let Err(e) = tx.send(text.into()) {
+                log::error!("failed to send message: {:?}", e);
+            }
+        }
     }
 }
 
